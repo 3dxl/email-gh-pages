@@ -1,0 +1,26 @@
+{
+  "name": "email-gh-pages",
+  "version": "0.0.0",
+  "description": "save email messages as posts in gh pages",
+  "main": "save.coffee",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/3dxl/email-gh-pages.git"
+  },
+  "keywords": [
+    "github",
+    "jekyll",
+    "gh-pages",
+    "email",
+    "haraka"
+  ],
+  "author": "Sjoerd de Jong",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/3dxl/email-gh-pages/issues"
+  },
+  "homepage": "https://github.com/3dxl/email-gh-pages"
+}
