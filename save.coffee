@@ -122,6 +122,8 @@ queue.process (msg, done) ->
     # add title
     if target == 'timeline'
       frontMatter.title ?= 'Timeline for ' + moment(email.serverReceived).format('dddd Do of MMM YYYY')
+      frontMatter.categories ?= []
+      frontMatter.categories.push 'timeline' if frontMatter.categories.indexOf('timeline') == -1
     else
       frontMatter.title ?= slugify(target).split('-').map((part) -> part.charAt(0).toUpperCase() + part.slice(1)).join(' ')
 
