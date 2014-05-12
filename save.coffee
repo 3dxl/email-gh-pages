@@ -5,6 +5,7 @@ github   = require 'octonode'
 Queue    = require 'bull'
 YAML     = require 'js-yaml'
 moment   = require 'moment'
+sharp    = require 'sharp'
 
 queueName = 'inbound-email-www.3dxl.nl'
 
@@ -62,10 +63,33 @@ queue.process (msg, done) ->
       0
     .then (availableIndex) ->
       # process each attachment and send it to github
+      path = null
+      buffer = null
+
       transfers = email.attachments?.map (attachment) ->
         path = photoFolder + '/' + availableIndex++ + '_' + attachment.fileName
         buffer = new Buffer(attachment.content, 'base64')
-        sendToGithub path, buffer
+
+        parts = path.split('.')
+        parts[parts.length] = parts[parts.length - 1]
+        parts[parts.length - 2] = '256'
+        path256 = parts.join('.')
+        parts[parts.length - 2] = '1024'
+        path1024 = parts.join('.')
+
+        deferred = RSVP.defer()
+
+        sharp(buffer).resize(256).toBuffer (err, buffer256) ->
+          return deferred.reject err if err
+          sharp(buffer).resize(1024).toBuffer (err, buffer1024) ->
+            return deferred.reject err if err
+
+            sendToGithub(path, buffer)
+            .then -> sendToGithub(path1024, buffer1024)
+            .then -> sendToGithub(path256, buffer256)
+            .then deferred.resolve
+
+        deferred.promise
 
       RSVP.all(transfers || [])
 
@@ -106,7 +130,7 @@ queue.process (msg, done) ->
       frontMatter.authors ?= []
       frontMatter.authors.push email.from[0].name if frontMatter.authors.indexOf(email.from[0].name) == -1
 
-    postChunks[0] = YAML.dump(frontMatter)+'\n'
+    postChunks[0] = YAML.dump(frontMatter)
 
     # add a header
     text = '## '
@@ -124,7 +148,7 @@ queue.process (msg, done) ->
       .replace('Verzonden vanaf Samsung Mobile', '')
 
     postChunks.push text
-    post.text = '---\n' + postChunks.map((chunk) -> chunk.replace(/^\n+|\n+$/g, '')).join('---\n\n')
+    post.text = '---\n' + postChunks.map((chunk) -> chunk.replace(/^\n+|\n+$/g, '')).join('\n\n---\n\n')
 
     # store the new post
     if post.sha

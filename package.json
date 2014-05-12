@@ -29,6 +29,7 @@
     "bull": "~0.1.6",
     "rsvp-throttle": "git://github.com/ssured/rsvp-throttle.git#master",
     "js-yaml": "~3.0.2",
-    "moment": "~2.6.0"
+    "moment": "~2.6.0",
+    "sharp": "~0.3.0"
   }
 }
