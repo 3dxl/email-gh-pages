@@ -25,4 +25,4 @@ build/Release
 node_modules
 
 # File containing the authentication object for node-github
-github_authentication.json
+credentials*
