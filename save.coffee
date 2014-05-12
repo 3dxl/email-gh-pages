@@ -67,15 +67,17 @@ queue.process (msg, done) ->
       buffer = null
 
       transfers = email.attachments?.map (attachment) ->
-        path = photoFolder + '/' + availableIndex++ + '_' + attachment.fileName
+        path = photoFolder + '/' + ('00' + availableIndex++).slice(-2) + '_' + attachment.fileName
         buffer = new Buffer(attachment.content, 'base64')
 
         parts = path.split('.')
         parts[parts.length] = parts[parts.length - 1]
-        parts[parts.length - 2] = '256'
+        parts[parts.length - 2] = 'mini'
         path256 = parts.join('.')
-        parts[parts.length - 2] = '1024'
+        parts[parts.length - 2] = 'midi'
         path1024 = parts.join('.')
+        parts[parts.length - 2] = 'orig'
+        path = parts.join('.')
 
         deferred = RSVP.defer()
 
@@ -85,8 +87,8 @@ queue.process (msg, done) ->
             return deferred.reject err if err
 
             sendToGithub(path, buffer)
-            .then -> sendToGithub(path1024, buffer1024)
             .then -> sendToGithub(path256, buffer256)
+            .then -> sendToGithub(path1024, buffer1024)
             .then deferred.resolve
 
         deferred.promise
