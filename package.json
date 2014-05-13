@@ -2,7 +2,7 @@
   "name": "email-gh-pages",
   "version": "0.0.0",
   "description": "save email messages as posts in gh pages",
-  "main": "save.coffee",
+  "main": "index.coffee",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
