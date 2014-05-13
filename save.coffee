@@ -1,20 +1,22 @@
-fs       = require 'fs'
-RSVP     = require 'rsvp'
-throttle = require 'rsvp-throttle'
-github   = require 'octonode'
-Queue    = require 'bull'
-YAML     = require 'js-yaml'
-moment   = require 'moment'
-sharp    = require 'sharp'
+fs        = require 'fs'
+RSVP      = require 'rsvp'
+throttle  = require 'rsvp-throttle'
+github    = require 'octonode'
+Queue     = require 'bull'
+YAML      = require 'js-yaml'
+moment    = require 'moment'
+sharp     = require 'sharp' # used for resizing images
+imageinfo = require 'imageinfo'
 
 queueName = 'inbound-email-www.3dxl.nl'
+repoName  = '3dxl/flaming-spice'
 
 # make sure these files exist!
 githubCredentials = JSON.parse fs.readFileSync 'credentials_github.json', 'ascii'
 redisCredentials = JSON.parse fs.readFileSync 'credentials_redis.json', 'ascii'
 
 # authenticate and build the promisified repo object
-repo = github.client(githubCredentials).repo '3dxl/3dxl.github.io'
+repo = github.client(githubCredentials).repo repoName
 for method in ['contents', 'createContents', 'updateContents']
   repo[method] = RSVP.denodeify repo[method], ['data','headers']
 
@@ -83,13 +85,22 @@ queue.process (msg, done) ->
 
         deferred = RSVP.defer()
 
-        sharp(buffer).resize(256).toBuffer (err, buffer256) ->
+        # resize to bounding box, based on aspect ratio
+        info = imageinfo buffer
+        if info.width / info.height >= 4/3
+          width = 1024
+          height = null
+        else
+          width = null
+          height = 768
+
+        sharp(buffer).resize((width || 0) >> 2, (height || 0) >> 2).toBuffer (err, buffer256) ->
           return deferred.reject err if err
-          sharp(buffer).resize(1024).toBuffer (err, buffer1024) ->
+          sharp(buffer).resize(width, height).toBuffer (err, buffer1024) ->
             return deferred.reject err if err
 
             sendToGithub(path256, buffer256)
-            # .then -> sendToGithub(path, buffer) # do not keep original
+            .then -> sendToGithub(path, buffer)
             .then -> sendToGithub(path1024, buffer1024)
             .then (midiName) ->
               console.log '  -  Resized', midiName
