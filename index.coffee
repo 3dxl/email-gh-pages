@@ -8,7 +8,7 @@ moment    = require 'moment'
 gm        = require 'gm' # used for resizing images
 
 queueName = 'inbound-email-www.3dxl.nl'
-repoName  = '3dxl/flaming-spice'
+repoName  = '3dxl/3dxl.github.io'
 
 # make sure these files exist!
 githubCredentials = JSON.parse fs.readFileSync 'credentials_github.json', 'ascii'
@@ -25,13 +25,19 @@ console.log 'Will process jobs appearing in queue:', queueName
 
 # save to github, returns a fixed URL to the file if succesful
 sendToGithub = throttle 1, (path, buffer) ->
+  console.log '  -  Uploading', buffer.length, 'bytes to', path
   repo.createContents(path, "Automatic upload of photo", buffer)
-  .then ({data,headers}) -> data.content.html_url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+  .then ({data,headers}) ->
+    console.log '  -  Uploaded', buffer.length, 'bytes to', path
+    data.content.html_url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+  .catch (err) ->
+    console.log '  -  Upload failed!', path, err
+    throw err
 
 slugify = (text) -> # from https://gist.github.com/mathewbyrne/1280286
   text.toString().toLowerCase()
     .replace(/\s+/g, '-')           # Replace spaces with -
-    .replace(/[^\w\-]+/g, '')       # Remove all non-word chars
+    .replace(/[^\w\-]+/g, '-')       # Remove all non-word chars
     .replace(/\-\-+/g, '-')         # Replace multiple - with single -
     .replace(/^-+/, '')             # Trim - from start of text
     .replace(/-+$/, '')             # Trim - from end of text
@@ -70,38 +76,42 @@ queue.process (msg, done) ->
       buffer = null
 
       transfers = email.attachments?.map (attachment) ->
+        console.log '  -  Will resize', attachment.fileName
         path = photoFolder + '/' + ('00' + availableIndex++).slice(-2) + '_' + attachment.fileName
         buffer = new Buffer(attachment.content, 'base64')
 
-        parts = path.split('.')
+        parts = path.toLowerCase().split('.')
         parts[parts.length] = parts[parts.length - 1]
         parts[parts.length - 2] = 'mini'
         path256 = parts.join('.')
         parts[parts.length - 2] = 'midi'
         path1024 = parts.join('.')
-        parts[parts.length - 2] = 'maxi'
-        path2048 = parts.join('.')
         parts[parts.length - 2] = 'orig'
         path = parts.join('.')
 
         deferred = RSVP.defer()
 
-        # resize images to a 4:3 bounding box, only if it exceeds the specified size ('>' option)
-        gm(buffer).autoOrient().resize(256, 192, '>').toBuffer (err, buffer256) ->
-          return deferred.reject err if err
-          gm(buffer).autoOrient().resize(1024, 768, '>').toBuffer (err, buffer1024) ->
-            return deferred.reject err if err
-            gm(buffer).autoOrient().resize(2048, 1536, '>').toBuffer (err, buffer2048) ->
-              return deferred.reject err if err
+        console.log '  -  Starting resize', attachment.fileName
 
-              sendToGithub(path, buffer)
-              .then -> sendToGithub(path256, buffer256)
-              .then -> sendToGithub(path2048, buffer2048)
-              .then -> sendToGithub(path1024, buffer1024)
-              .then (midiName) ->
-                console.log '  -  Resized', midiName
-                deferred.resolve midiName
-              .catch deferred.reject
+        # resize images to a 4:3 bounding box, only if it exceeds the specified size ('>' option)
+        gm(buffer, attachment.fileName).resize(256, 192, '>').autoOrient().quality(90).toBuffer (err, buffer256) ->
+          if err
+            console.log '256 resize failed for', path256
+            return deferred.reject err
+          console.log '  -  256 resized', path256
+          gm(buffer, attachment.fileName).resize(1024, 768, '>').autoOrient().quality(90).toBuffer (err, buffer1024) ->
+            if err
+              console.log '1024 resize failed for', path1024
+              return deferred.reject err
+            console.log '  -  1024 resized', path1024
+
+            sendToGithub(path, buffer)
+            .then -> sendToGithub(path256, buffer256)
+            .then -> sendToGithub(path1024, buffer1024)
+            .then (midiName) ->
+              console.log '  -  Resized', midiName
+              deferred.resolve midiName
+            .catch deferred.reject
 
         deferred.promise
 
@@ -135,18 +145,21 @@ queue.process (msg, done) ->
         published: true
       postChunks = ['']
 
-    # add title
+    # add title and category
     if target == 'timeline'
       frontMatter.title ?= 'Timeline for ' + moment(email.serverReceived).format('dddd Do of MMM YYYY')
-      frontMatter.categories ?= []
-      frontMatter.categories.push 'timeline' if frontMatter.categories.indexOf('timeline') == -1
     else
-      frontMatter.title ?= slugify(target).split('-').map((part) -> part.charAt(0).toUpperCase() + part.slice(1)).join(' ')
+      frontMatter.title ?= email.subject
+
+    frontMatter.categories ?= []
+    frontMatter.categories.push slugify(target) if frontMatter.categories.indexOf(slugify(target)) == -1
 
     # add author
     if email.from[0]?.name?.length > 0
       frontMatter.authors ?= []
       frontMatter.authors.push email.from[0].name if frontMatter.authors.indexOf(email.from[0].name) == -1
+
+    frontMatter.thumbnail ?= photos[0].replace('midi','mini') if photos.length > 0
 
     console.log '  -  FrontMatter:'
     console.log YAML.dump frontMatter
@@ -161,7 +174,7 @@ queue.process (msg, done) ->
 
     # add photos
     for url in photos
-      text += '![' + url.split('/').slice(-1)[0] + '](' + url + ')\n'
+      text += '![image](' + url + ')\n'
     text += '\n' if photos.length
 
     # add text
