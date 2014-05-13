@@ -46,7 +46,7 @@ queue.process (msg, done) ->
   email = msg.data
   startTime = (new Date()).valueOf()
 
-  console.log 'Started processing', msg.jobId
+  console.log 'Started processing', msg.jobId, email.subject
 
   isoDate = email.serverReceived.substr 0, 10
   target = email.to[0]?.address?.split('@')[0] || 'timeline'
@@ -58,8 +58,10 @@ queue.process (msg, done) ->
     .then ({data,headers}) ->
       maxIndex = Math.max.apply null, data.map (file) ->
         if isNaN parseInt file.name then -1 else parseInt file.name
+      console.log '  - ', photoFolder, 'maxIndex is', maxIndex
       Math.max maxIndex + 1, 0
     .catch (err) -> # folder does not exist
+      console.log '  - ', 'Will create', photoFolder
       0
     .then (availableIndex) ->
       # process each attachment and send it to github
@@ -86,10 +88,12 @@ queue.process (msg, done) ->
           sharp(buffer).resize(1024).toBuffer (err, buffer1024) ->
             return deferred.reject err if err
 
-            sendToGithub(path, buffer)
-            .then -> sendToGithub(path256, buffer256)
+            sendToGithub(path256, buffer256)
+            # .then -> sendToGithub(path, buffer) # do not keep original
             .then -> sendToGithub(path1024, buffer1024)
-            .then deferred.resolve
+            .then (midiName) ->
+              console.log '  -  Resized', midiName
+              deferred.resolve midiName
 
         deferred.promise
 
@@ -98,9 +102,11 @@ queue.process (msg, done) ->
   # fetch the blog post from github
   post = repo.contents(postPath)
     .then ({data,headers}) ->
+      console.log '  -  Will append to existing post'
       text: (new Buffer(data.content, 'base64')).toString()
       sha: data.sha
     .catch (err) ->
+      console.log '  -  Will create a new post'
       text: null
       sha: null
 
@@ -134,6 +140,9 @@ queue.process (msg, done) ->
       frontMatter.authors ?= []
       frontMatter.authors.push email.from[0].name if frontMatter.authors.indexOf(email.from[0].name) == -1
 
+    console.log '  -  FrontMatter:'
+    console.log YAML.dump frontMatter
+
     postChunks[0] = YAML.dump(frontMatter)
 
     # add a header
@@ -151,6 +160,9 @@ queue.process (msg, done) ->
     text += (email.text || '')
       .replace('Verzonden vanaf Samsung Mobile', '')
 
+    console.log '  -  Appended text:'
+    console.log text
+
     postChunks.push text
     post.text = '---\n' + postChunks.map((chunk) -> chunk.replace(/^\n+|\n+$/g, '')).join('\n\n---\n\n')
 
@@ -160,8 +172,8 @@ queue.process (msg, done) ->
     else
       repo.createContents postPath, 'Automatic message created from email', post.text
   .then ({data,headers}) ->
-    console.log data
-    console.log headers
+    # console.log data
+    # console.log headers
 
     millis = (new Date()).valueOf() - startTime
     console.log 'Finished processing job', msg.jobId, 'in', millis, 'ms'
