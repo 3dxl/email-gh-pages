@@ -94,12 +94,12 @@ queue.process (msg, done) ->
         console.log '  -  Starting resize', attachment.fileName
 
         # resize images to a 4:3 bounding box, only if it exceeds the specified size ('>' option)
-        gm(buffer, attachment.fileName).resize(256, 192, '>').autoOrient().quality(90).toBuffer (err, buffer256) ->
+        gm(buffer, attachment.fileName).resize(256, 192, '>').autoOrient().quality(70).toBuffer (err, buffer256) ->
           if err
             console.log '256 resize failed for', path256
             return deferred.reject err
           console.log '  -  256 resized', path256
-          gm(buffer, attachment.fileName).resize(1024, 768, '>').autoOrient().quality(90).toBuffer (err, buffer1024) ->
+          gm(buffer, attachment.fileName).resize(1024, 768, '>').autoOrient().quality(70).toBuffer (err, buffer1024) ->
             if err
               console.log '1024 resize failed for', path1024
               return deferred.reject err
@@ -131,6 +131,8 @@ queue.process (msg, done) ->
   # write all new
   RSVP.hash(photos: photos, post: post)
   .then ({photos, post}) ->
+    isNewPost = false
+
     # photos is a list of http urls to all uploaded images
     postChunks = post.text?.split('---\n') || []
 
@@ -140,6 +142,7 @@ queue.process (msg, done) ->
       frontMatter = YAML.load postChunks[0]
     else
       # new post
+      isNewPost = true
       frontMatter =
         layout: 'post'
         published: true
@@ -147,7 +150,7 @@ queue.process (msg, done) ->
 
     # add title and category
     if target == 'timeline'
-      frontMatter.title ?= 'Timeline for ' + moment(email.serverReceived).format('dddd Do of MMM YYYY')
+      frontMatter.title ?= 'Timeline for ' + moment(email.serverReceived).format('dddd')
     else
       frontMatter.title ?= email.subject
 
@@ -166,11 +169,14 @@ queue.process (msg, done) ->
 
     postChunks[0] = YAML.dump(frontMatter)
 
+    text = ''
+
     # add a header
-    text = '## '
-    text += moment(email.serverReceived).format('HH:mm') + ' ' if target == 'timeline'
-    text += email.subject
-    text += '\n'
+    if !isNewPost || (target == 'timeline')
+      text += '## '
+      text += moment(email.serverReceived).format('HH:mm') + ' ' if target == 'timeline'
+      text += email.subject
+      text += '\n'
 
     # add photos
     for url in photos
