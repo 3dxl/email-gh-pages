@@ -5,8 +5,7 @@ github    = require 'octonode'
 Queue     = require 'bull'
 YAML      = require 'js-yaml'
 moment    = require 'moment'
-sharp     = require 'sharp' # used for resizing images
-imageinfo = require 'imageinfo'
+gm        = require 'gm' # used for resizing images
 
 queueName = 'inbound-email-www.3dxl.nl'
 repoName  = '3dxl/flaming-spice'
@@ -22,7 +21,7 @@ for method in ['contents', 'createContents', 'updateContents']
 
 # init the queue
 queue = Queue queueName, redisCredentials.port, redisCredentials.host
-console.log 'Will process jobs in', queueName
+console.log 'Will process jobs appearing in queue:', queueName
 
 # save to github, returns a fixed URL to the file if succesful
 sendToGithub = throttle 1, (path, buffer) ->
@@ -80,31 +79,29 @@ queue.process (msg, done) ->
         path256 = parts.join('.')
         parts[parts.length - 2] = 'midi'
         path1024 = parts.join('.')
+        parts[parts.length - 2] = 'maxi'
+        path2048 = parts.join('.')
         parts[parts.length - 2] = 'orig'
         path = parts.join('.')
 
         deferred = RSVP.defer()
 
-        # resize to bounding box, based on aspect ratio
-        info = imageinfo buffer
-        if info.width / info.height >= 4/3
-          width = 1024
-          height = null
-        else
-          width = null
-          height = 768
-
-        sharp(buffer).resize((width || 0) >> 2, (height || 0) >> 2).toBuffer (err, buffer256) ->
+        # resize images to a 4:3 bounding box, only if it exceeds the specified size ('>' option)
+        gm(buffer).autoOrient().resize(256, 192, '>').toBuffer (err, buffer256) ->
           return deferred.reject err if err
-          sharp(buffer).resize(width, height).toBuffer (err, buffer1024) ->
+          gm(buffer).autoOrient().resize(1024, 768, '>').toBuffer (err, buffer1024) ->
             return deferred.reject err if err
+            gm(buffer).autoOrient().resize(2048, 1536, '>').toBuffer (err, buffer2048) ->
+              return deferred.reject err if err
 
-            sendToGithub(path256, buffer256)
-            .then -> sendToGithub(path, buffer)
-            .then -> sendToGithub(path1024, buffer1024)
-            .then (midiName) ->
-              console.log '  -  Resized', midiName
-              deferred.resolve midiName
+              sendToGithub(path, buffer)
+              .then -> sendToGithub(path256, buffer256)
+              .then -> sendToGithub(path2048, buffer2048)
+              .then -> sendToGithub(path1024, buffer1024)
+              .then (midiName) ->
+                console.log '  -  Resized', midiName
+                deferred.resolve midiName
+              .catch deferred.reject
 
         deferred.promise
 
