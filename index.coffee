@@ -12,8 +12,8 @@ targetRepo = username: '3dxl', reponame: '3dxl.github.io'
 githubURLPrefix = 'https://raw.githubusercontent.com/3dxl/3dxl.github.io/master/'
 
 # make sure these files exist!
-githubCredentials = JSON.parse fs.readFileSync 'credentials_github.json', 'ascii'
-redisCredentials = JSON.parse fs.readFileSync 'credentials_redis.json', 'ascii'
+githubCredentials = JSON.parse fs.readFileSync __dirname + '/credentials_github.json', 'ascii'
+redisCredentials = JSON.parse fs.readFileSync __dirname + '/credentials_redis.json', 'ascii'
 
 # authenticate and build the promisified repo object
 gh = Octokit.new githubCredentials
