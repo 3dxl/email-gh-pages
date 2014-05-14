@@ -182,7 +182,7 @@ queue.process (msg, done) ->
     commitContents[postPath] = '---\n' + postChunks.map((chunk) -> chunk.replace(/^\n+|\n+$/g, '')).join('\n\n---\n\n')
 
     # store the new post
-    repoBranch.writeMany commitContents, 'Update by email ' + email.from[0]?.name + ' <' + email.from[0]?.email + '>'
+    repoBranch.writeMany commitContents, 'Update by email ' + email.from[0]?.name + ' <' + email.from[0]?.address + '>'
   .then (result) ->
     console.log '  -  Wrote message to Github', result.url
 
