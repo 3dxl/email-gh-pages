@@ -6,6 +6,7 @@ YAML      = require 'js-yaml'
 moment    = require 'moment'
 gm        = require 'gm' # used for resizing images
 Octokit   = require 'octokit'
+imageinfo = require 'imageinfo'
 
 queueName = 'inbound-email-website.3dxl.nl'
 targetRepo = username: '3dxl', reponame: '3dxl.github.io'
@@ -58,6 +59,7 @@ queue.process (msg, done) ->
   target = email.to[0]?.address?.split('@')[0] || 'timeline'
   postPath = '_posts/' + isoDate + '-' + slugify(target) + '.markdown'
   photoFolder = 'photos/' + isoDate
+  binaryFolder = 'binaries/' + isoDate
 
   # read contents of repo to get find a free index and add photos to the repo
   repoBranch.contents(photoFolder)
@@ -78,28 +80,34 @@ queue.process (msg, done) ->
     commitContents = {}
 
     email.attachments?.forEach (attachment) ->
-      console.log '  -  Will resize', attachment.fileName
-      path = photoFolder + '/' + ('00' + availableIndex++).slice(-2) + '_' + attachment.fileName
       buffer = new Buffer(attachment.content, 'base64')
 
-      # create path with 'mini', 'midi', 'orig' in front of the extension
-      # eg 'sample.jpg' -> 'sample.mini.jpg'
-      parts = path.toLowerCase().split('.')
-      parts[parts.length] = parts[parts.length - 1]
+      if imageinfo buffer
+        console.log '  -  Will resize', attachment.fileName
+        path = photoFolder + '/' + ('00' + availableIndex++).slice(-2) + '_' + attachment.fileName
 
-      # add a thumb
-      parts[parts.length - 2] = 'mini'
-      commitContents[parts.join('.')] = resizeBuffer(buffer, attachment.fileName, 256, 192).then (resizedBuffer) ->
-        return isBase64: true, content: resizedBuffer.toString 'binary'
+        # create path with 'mini', 'midi', 'orig' in front of the extension
+        # eg 'sample.jpg' -> 'sample.mini.jpg'
+        parts = path.toLowerCase().split('.')
+        parts[parts.length] = parts[parts.length - 1]
 
-      # add a normal image
-      parts[parts.length - 2] = 'midi'
-      commitContents[parts.join('.')] = resizeBuffer(buffer, attachment.fileName, 1024, 768).then (resizedBuffer) ->
-        return isBase64: true, content: resizedBuffer.toString 'binary'
+        # add a thumb
+        parts[parts.length - 2] = 'mini'
+        commitContents[parts.join('.')] = resizeBuffer(buffer, attachment.fileName, 256, 192).then (resizedBuffer) ->
+          return isBase64: true, content: resizedBuffer.toString 'binary'
 
-      # add original
-      parts[parts.length - 2] = 'orig'
-      commitContents[parts.join('.')] = isBase64: true, content: buffer.toString 'binary'
+        # add a normal image
+        parts[parts.length - 2] = 'midi'
+        commitContents[parts.join('.')] = resizeBuffer(buffer, attachment.fileName, 1024, 768).then (resizedBuffer) ->
+          return isBase64: true, content: resizedBuffer.toString 'binary'
+
+        # add original
+        parts[parts.length - 2] = 'orig'
+        commitContents[parts.join('.')] = isBase64: true, content: buffer.toString 'binary'
+      else
+        console.log '  -  Will add binary', attachment.fileName
+        path = binaryFolder + '/' + attachment.fileName
+        commitContents[path] = isBase64: true, content: buffer.toString 'binary'
 
     commitContents[postPath] = repoBranch.contents(postPath).catch (err) ->
         console.log '  -  Will create a new post'
@@ -154,11 +162,14 @@ queue.process (msg, done) ->
       text += email.subject
       text += '\n'
 
-    # add photos
+    # add photos & binaries
     midiPhotos = Object.keys(commitContents).filter((k) -> k.indexOf('.midi.') > -1)
     for path in midiPhotos
       text += '![](' + githubURLPrefix + path + ')\n'
-    text += '\n' if Object.keys(commitContents).length > 1
+    binaries = Object.keys(commitContents).filter((k) -> k.indexOf('binaries/') == 0)
+    for path in binaries
+      text += '[' + path.split('/').slice(2).join('/') + '](' + githubURLPrefix + path + ')\n'
+    text += '\n' if (midiPhotos.length + binaries.length) > 0
 
     # add text
     text += (email.text || '')
