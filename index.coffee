@@ -1,38 +1,37 @@
 fs        = require 'fs'
 RSVP      = require 'rsvp'
 throttle  = require 'rsvp-throttle'
-github    = require 'octonode'
 Queue     = require 'bull'
 YAML      = require 'js-yaml'
 moment    = require 'moment'
 gm        = require 'gm' # used for resizing images
+Octokit   = require 'octokit'
 
-queueName = 'inbound-email-www.3dxl.nl'
-repoName  = '3dxl/3dxl.github.io'
+queueName = 'inbound-email-website.3dxl.nl'
+targetRepo = username: '3dxl', reponame: '3dxl.github.io'
+githubURLPrefix = 'https://raw.githubusercontent.com/3dxl/3dxl.github.io/master/'
 
 # make sure these files exist!
 githubCredentials = JSON.parse fs.readFileSync 'credentials_github.json', 'ascii'
 redisCredentials = JSON.parse fs.readFileSync 'credentials_redis.json', 'ascii'
 
 # authenticate and build the promisified repo object
-repo = github.client(githubCredentials).repo repoName
-for method in ['contents', 'createContents', 'updateContents']
-  repo[method] = RSVP.denodeify repo[method], ['data','headers']
+gh = Octokit.new githubCredentials
+repo = gh.getRepo targetRepo.username, targetRepo.reponame
+repoBranch = repo.getBranch() # get default branch
 
 # init the queue
 queue = Queue queueName, redisCredentials.port, redisCredentials.host
 console.log 'Will process jobs appearing in queue:', queueName
 
-# save to github, returns a fixed URL to the file if succesful
-sendToGithub = throttle 1, (path, buffer) ->
-  console.log '  -  Uploading', buffer.length, 'bytes to', path
-  repo.createContents(path, "Automatic upload of photo", buffer)
-  .then ({data,headers}) ->
-    console.log '  -  Uploaded', buffer.length, 'bytes to', path
-    data.content.html_url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
-  .catch (err) ->
-    console.log '  -  Upload failed!', path, err
-    throw err
+# returns a promise to a resized buffer
+resizeBuffer = throttle 1, (buffer, name, width, height) ->
+  new RSVP.Promise (res, rej) ->
+    gm(buffer, name)
+    .resize(width, height, '>').autoOrient().quality(80)
+    .toBuffer (err, resizedBuffer) ->
+      return rej err if err
+      res resizedBuffer
 
 slugify = (text) -> # from https://gist.github.com/mathewbyrne/1280286
   text.toString().toLowerCase()
@@ -61,80 +60,56 @@ queue.process (msg, done) ->
   photoFolder = 'photos/' + isoDate
 
   # read contents of repo to get find a free index and add photos to the repo
-  photos = repo.contents(photoFolder)
-    .then ({data,headers}) ->
-      maxIndex = Math.max.apply null, data.map (file) ->
-        if isNaN parseInt file.name then -1 else parseInt file.name
-      console.log '  - ', photoFolder, 'maxIndex is', maxIndex
-      Math.max maxIndex + 1, 0
-    .catch (err) -> # folder does not exist
-      console.log '  - ', 'Will create', photoFolder
-      0
-    .then (availableIndex) ->
-      # process each attachment and send it to github
-      path = null
-      buffer = null
+  repoBranch.contents(photoFolder)
+  .then (data) ->
+    data = JSON.parse data if typeof data == 'string'
+    maxIndex = Math.max.apply null, data.map (file) ->
+      if isNaN parseInt file.name then -1 else parseInt file.name
+    console.log '  - ', photoFolder, 'maxIndex is', maxIndex
+    Math.max maxIndex + 1, 0
+  .catch (err) -> # folder does not exist
+    console.log '  - ', 'Will create', photoFolder
+    0
+  .then (availableIndex) ->
+    # process each attachment and send it to github
+    path = null
+    buffer = null
 
-      transfers = email.attachments?.map (attachment) ->
-        console.log '  -  Will resize', attachment.fileName
-        path = photoFolder + '/' + ('00' + availableIndex++).slice(-2) + '_' + attachment.fileName
-        buffer = new Buffer(attachment.content, 'base64')
+    commitContents = {}
 
-        parts = path.toLowerCase().split('.')
-        parts[parts.length] = parts[parts.length - 1]
-        parts[parts.length - 2] = 'mini'
-        path256 = parts.join('.')
-        parts[parts.length - 2] = 'midi'
-        path1024 = parts.join('.')
-        parts[parts.length - 2] = 'orig'
-        path = parts.join('.')
+    email.attachments?.forEach (attachment) ->
+      console.log '  -  Will resize', attachment.fileName
+      path = photoFolder + '/' + ('00' + availableIndex++).slice(-2) + '_' + attachment.fileName
+      buffer = new Buffer(attachment.content, 'base64')
 
-        deferred = RSVP.defer()
+      # create path with 'mini', 'midi', 'orig' in front of the extension
+      # eg 'sample.jpg' -> 'sample.mini.jpg'
+      parts = path.toLowerCase().split('.')
+      parts[parts.length] = parts[parts.length - 1]
 
-        console.log '  -  Starting resize', attachment.fileName
+      # add a thumb
+      parts[parts.length - 2] = 'mini'
+      commitContents[parts.join('.')] = resizeBuffer(buffer, attachment.fileName, 256, 192).then (resizedBuffer) ->
+        return isBase64: true, content: resizedBuffer.toString 'binary'
 
-        # resize images to a 4:3 bounding box, only if it exceeds the specified size ('>' option)
-        gm(buffer, attachment.fileName).resize(256, 192, '>').autoOrient().quality(70).toBuffer (err, buffer256) ->
-          if err
-            console.log '256 resize failed for', path256
-            return deferred.reject err
-          console.log '  -  256 resized', path256
-          gm(buffer, attachment.fileName).resize(1024, 768, '>').autoOrient().quality(70).toBuffer (err, buffer1024) ->
-            if err
-              console.log '1024 resize failed for', path1024
-              return deferred.reject err
-            console.log '  -  1024 resized', path1024
+      # add a normal image
+      parts[parts.length - 2] = 'midi'
+      commitContents[parts.join('.')] = resizeBuffer(buffer, attachment.fileName, 1024, 768).then (resizedBuffer) ->
+        return isBase64: true, content: resizedBuffer.toString 'binary'
 
-            sendToGithub(path, buffer)
-            .then -> sendToGithub(path256, buffer256)
-            .then -> sendToGithub(path1024, buffer1024)
-            .then (midiName) ->
-              console.log '  -  Resized', midiName
-              deferred.resolve midiName
-            .catch deferred.reject
+      # add original
+      parts[parts.length - 2] = 'orig'
+      commitContents[parts.join('.')] = isBase64: true, content: buffer.toString 'binary'
 
-        deferred.promise
+    commitContents[postPath] = repoBranch.contents(postPath).catch (err) ->
+        console.log '  -  Will create a new post'
+        null
 
-      RSVP.all(transfers || [])
-
-  # fetch the blog post from github
-  post = repo.contents(postPath)
-    .then ({data,headers}) ->
-      console.log '  -  Will append to existing post'
-      text: (new Buffer(data.content, 'base64')).toString()
-      sha: data.sha
-    .catch (err) ->
-      console.log '  -  Will create a new post'
-      text: null
-      sha: null
-
-  # write all new
-  RSVP.hash(photos: photos, post: post)
-  .then ({photos, post}) ->
+    RSVP.hash commitContents
+  .then (commitContents) ->
     isNewPost = false
 
-    # photos is a list of http urls to all uploaded images
-    postChunks = post.text?.split('---\n') || []
+    postChunks = commitContents[postPath]?.split('---\n') || []
 
     if postChunks[0] == ''
       # existing post
@@ -162,7 +137,8 @@ queue.process (msg, done) ->
       frontMatter.authors ?= []
       frontMatter.authors.push email.from[0].name if frontMatter.authors.indexOf(email.from[0].name) == -1
 
-    frontMatter.thumbnail ?= photos[0].replace('midi','mini') if photos.length > 0
+    miniPhotos = Object.keys(commitContents).filter((k) -> k.indexOf('.mini.') > -1)
+    frontMatter.thumbnail ?= githubURLPrefix + miniPhotos[0] if miniPhotos.length > 0
 
     console.log '  -  FrontMatter:'
     console.log YAML.dump frontMatter
@@ -179,9 +155,10 @@ queue.process (msg, done) ->
       text += '\n'
 
     # add photos
-    for url in photos
-      text += '![image](' + url + ')\n'
-    text += '\n' if photos.length
+    midiPhotos = Object.keys(commitContents).filter((k) -> k.indexOf('.midi.') > -1)
+    for path in midiPhotos
+      text += '![](' + githubURLPrefix + path + ')\n'
+    text += '\n' if Object.keys(commitContents).length > 1
 
     # add text
     text += (email.text || '')
@@ -191,21 +168,16 @@ queue.process (msg, done) ->
     console.log text
 
     postChunks.push text
-    post.text = '---\n' + postChunks.map((chunk) -> chunk.replace(/^\n+|\n+$/g, '')).join('\n\n---\n\n')
+    commitContents[postPath] = '---\n' + postChunks.map((chunk) -> chunk.replace(/^\n+|\n+$/g, '')).join('\n\n---\n\n')
 
     # store the new post
-    if post.sha
-      repo.updateContents postPath, 'Automatic message updated from email', post.text, post.sha
-    else
-      repo.createContents postPath, 'Automatic message created from email', post.text
-  .then ({data,headers}) ->
-    # console.log data
-    # console.log headers
+    repoBranch.writeMany commitContents, 'Update by email ' + email.from[0]?.name + ' <' + email.from[0]?.email + '>'
+  .then (result) ->
+    console.log '  -  Wrote message to Github', result.url
 
     millis = (new Date()).valueOf() - startTime
     console.log 'Finished processing job', msg.jobId, 'in', millis, 'ms'
 
-    console.log headers['x-ratelimit-remaining'], '/', headers['x-ratelimit-limit'], 'expires', moment(1000*parseInt(headers['x-ratelimit-reset'])).format()
     done()
   .catch (err) ->
     console.log '==Failed== processing job', msg.jobId, err
